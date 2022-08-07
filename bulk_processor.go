@@ -52,6 +52,7 @@ type BulkProcessorService struct {
 	wantStats            bool          // indicates whether to gather statistics
 	backoff              Backoff       // a custom Backoff to use for errors
 	retryItemStatusCodes []int         // array of status codes for bulk response line items that may be retried
+	refresh              string        // refresh type
 }
 
 // NewBulkProcessorService creates a new BulkProcessorService.
@@ -148,6 +149,12 @@ func (s *BulkProcessorService) RetryItemStatusCodes(retryItemStatusCodes ...int)
 	return s
 }
 
+// Refresh set refresh type with every bulk request
+func (s *BulkProcessorService) Refresh(refresh string) *BulkProcessorService {
+	s.refresh = refresh
+	return s
+}
+
 // Do creates a new BulkProcessor and starts it.
 // Consider the BulkProcessor as a running instance that accepts bulk requests
 // and commits them to Elasticsearch, spreading the work across one or more
@@ -182,6 +189,9 @@ func (s *BulkProcessorService) Do(ctx context.Context) (*BulkProcessor, error) {
 		s.wantStats,
 		s.backoff,
 		retryItemStatusCodes)
+	if s.refresh != "" {
+		p.Refresh(s.refresh)
+	}
 
 	err := p.Start(ctx)
 	if err != nil {
@@ -279,6 +289,8 @@ type BulkProcessor struct {
 	stats   *BulkProcessorStats
 
 	stopReconnC chan struct{} // channel to signal stop reconnection attempts
+
+	refresh string
 }
 
 func newBulkProcessor(
@@ -332,7 +344,7 @@ func (p *BulkProcessor) Start(ctx context.Context) error {
 	p.workers = make([]*bulkWorker, p.numWorkers)
 	for i := 0; i < p.numWorkers; i++ {
 		p.workerWg.Add(1)
-		p.workers[i] = newBulkWorker(p, i)
+		p.workers[i] = newBulkWorker(p, i).Refresh(p.refresh)
 		go p.workers[i].work(ctx)
 	}
 
@@ -437,6 +449,11 @@ func (p *BulkProcessor) flusher(interval time.Duration) {
 	}
 }
 
+func (p *BulkProcessor) Refresh(refresh string) *BulkProcessor {
+	p.refresh = refresh
+	return p
+}
+
 // -- Bulk Worker --
 
 // bulkWorker encapsulates a single worker, running in a goroutine,
@@ -450,6 +467,7 @@ type bulkWorker struct {
 	service     *BulkService
 	flushC      chan struct{}
 	flushAckC   chan struct{}
+	refresh     string
 }
 
 // newBulkWorker creates a new bulkWorker instance.
@@ -459,10 +477,15 @@ func newBulkWorker(p *BulkProcessor, i int) *bulkWorker {
 		i:           i,
 		bulkActions: p.bulkActions,
 		bulkSize:    p.bulkSize,
-		service:     NewBulkService(p.c),
+		service:     NewBulkService(p.c).Refresh(p.refresh),
 		flushC:      make(chan struct{}),
 		flushAckC:   make(chan struct{}),
 	}
+}
+
+func (w *bulkWorker) Refresh(refresh string) *bulkWorker {
+	w.refresh = refresh
+	return w
 }
 
 // work waits for bulk requests and manual flush calls on the respective
